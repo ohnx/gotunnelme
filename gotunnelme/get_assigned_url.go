@@ -7,10 +7,6 @@ import (
 	"net/http"
 )
 
-const (
-	localtunnelServer = "http://localtunnel.me/"
-)
-
 type AssignedUrlInfo struct {
 	Id           string `json:"id,omitempty"`
 	Url          string `json:"url,omitempty"`
@@ -18,11 +14,11 @@ type AssignedUrlInfo struct {
 	MaxConnCount int    `json:"max_conn_count,omitempty"`
 }
 
-func GetAssignedUrl(assignedDomain string) (*AssignedUrlInfo, error) {
+func GetAssignedUrl(tunnelServer string, assignedDomain string) (*AssignedUrlInfo, error) {
 	if len(assignedDomain) == 0 {
 		assignedDomain = "?new"
 	}
-	url := fmt.Sprintf(localtunnelServer+"%s", assignedDomain)
+	url := fmt.Sprintf(tunnelServer+"%s", assignedDomain)
 	request, _ := http.NewRequest("GET", url, nil)
 	response, httpErr := http.DefaultClient.Do(request)
 	if httpErr != nil {

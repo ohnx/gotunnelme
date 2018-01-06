@@ -15,19 +15,21 @@ import (
 var Debug = false
 
 type TunnelConn struct {
-	remoteHost   string
-	remotePort   int
-	localPort    int
-	remoteConn   net.Conn
-	localConn    net.Conn
-	errorChannel chan error
+	remoteHost  	string
+	remotePort  	int
+	proxyHost		string
+	proxyPort   	int
+	remoteConn  	net.Conn
+	localConn   	net.Conn
+	errorChannel	chan error
 }
 
-func NewTunnelConn(remoteHost string, remotePort, localPort int) *TunnelConn {
+func NewTunnelConn(remoteHost, proxyHost string, remotePort, proxyPort int) *TunnelConn {
 	tunnelConn := &TunnelConn{}
 	tunnelConn.remoteHost = remoteHost
 	tunnelConn.remotePort = remotePort
-	tunnelConn.localPort = localPort
+	tunnelConn.proxyHost = proxyHost
+	tunnelConn.proxyPort = proxyPort
 	return tunnelConn
 }
 
@@ -36,26 +38,26 @@ func (self *TunnelConn) Tunnel(replyCh chan<- int) error {
 	remoteConn, remoteErr := self.connectRemote()
 	if remoteErr != nil {
 		if Debug {
-			fmt.Printf("Connect remote error[%s]!\n", remoteErr.Error())
+			fmt.Printf("Remote[%s:%d]: Connect error: %s!\n", self.remoteHost, self.remotePort, remoteErr.Error())
 		}
 		replyCh <- -1
 		return remoteErr
 	}
 
 	if Debug {
-		fmt.Printf("Connect remote[%s:%d] successful!\n", self.remoteHost, self.remotePort)
+		fmt.Printf("Remote[%s:%d]: Connect successful!\n", self.remoteHost, self.remotePort)
 	}
 
 	localConn, localErr := self.connectLocal()
 	if localErr != nil {
 		if Debug {
-			fmt.Printf("Connect local error[%s]!\n", localErr.Error())
+			fmt.Printf("Local[%s:%d]: Connect error: %s!\n", self.proxyHost, self.proxyPort, localErr.Error())
 		}
 		replyCh <- -1
 		return localErr
 	}
 	if Debug {
-		fmt.Printf("Connect local[:%d] successful!\n", self.localPort)
+		fmt.Printf("Local[%s:%d]: Connect successful!\n", self.proxyHost, self.proxyPort)
 	}
 
 	self.remoteConn = remoteConn
@@ -66,7 +68,7 @@ func (self *TunnelConn) Tunnel(replyCh chan<- int) error {
 			_, err = io.Copy(remoteConn, localConn)
 			if err != nil {
 				if Debug {
-					fmt.Printf("Stop copy form local to remote! error=[%v]\n", err)
+					fmt.Printf("Stop copy from local to remote! error=[%v]\n", err)
 				}
 				break
 			}
@@ -79,7 +81,7 @@ func (self *TunnelConn) Tunnel(replyCh chan<- int) error {
 			_, err = io.Copy(localConn, remoteConn)
 			if err != nil {
 				if Debug {
-					fmt.Printf("Stop copy form remote to local! error=[%v]\n", err)
+					fmt.Printf("Stop copy from remote to local! error=[%v]\n", err)
 				}
 				break
 			}
@@ -143,7 +145,7 @@ func (self *TunnelConn) connectRemote() (net.Conn, error) {
 }
 
 func (self *TunnelConn) connectLocal() (net.Conn, error) {
-	localAddr := fmt.Sprintf("%s:%d", "localhost", self.localPort)
+	localAddr := fmt.Sprintf("%s:%d", self.proxyHost, self.proxyPort)
 	return net.Dial("tcp", localAddr)
 }
 
@@ -155,29 +157,32 @@ const (
 
 type Tunnel struct {
 	assignedUrlInfo *AssignedUrlInfo
-	localPort       int
+	proxyPort       int
+	proxyHost		string
+	tunnelServer	string
 	tunnelConns     []*TunnelConn
 	cmdChan         chan TunnelCommand
 }
 
-func NewTunnel() *Tunnel {
+func NewTunnel(tunnelServer string) *Tunnel {
 	tunnel := &Tunnel{}
 	tunnel.cmdChan = make(chan TunnelCommand, 1)
+	tunnel.tunnelServer = tunnelServer
 	return tunnel
 }
 
-func (self *Tunnel) startTunnel() error {
-	if err := self.checkLocalPort(); err != nil {
+func (self *Tunnel) StartTunnel() error {
+	if err := self.checkArgs(); err != nil {
 		return err
 	}
-	url, parseErr := url.Parse(localtunnelServer)
+	url, parseErr := url.Parse(self.tunnelServer)
 	if parseErr != nil {
 		return parseErr
 	}
 	replyCh := make(chan int, self.assignedUrlInfo.MaxConnCount)
 	remoteHost := url.Host
 	for i := 0; i < self.assignedUrlInfo.MaxConnCount; i++ {
-		tunnelConn := NewTunnelConn(remoteHost, self.assignedUrlInfo.Port, self.localPort)
+		tunnelConn := NewTunnelConn(remoteHost, self.proxyHost, self.assignedUrlInfo.Port, self.proxyPort)
 		self.tunnelConns[i] = tunnelConn
 		go tunnelConn.Tunnel(replyCh)
 	}
@@ -196,11 +201,11 @@ L:
 	return nil
 }
 
-func (self *Tunnel) checkLocalPort() error {
-	localAddr := fmt.Sprintf("%s:%d", "localhost", self.localPort)
+func (self *Tunnel) checkArgs() error {
+	localAddr := fmt.Sprintf("%s:%d", self.proxyHost, self.proxyPort)
 	c, err := net.Dial("tcp", localAddr)
 	if err != nil {
-		return errors.New("can't connect local port!")
+		return errors.New("Can't connect to port!")
 	}
 	c.Close()
 	return nil
@@ -208,7 +213,7 @@ func (self *Tunnel) checkLocalPort() error {
 
 func (self *Tunnel) StopTunnel() {
 	if Debug {
-		fmt.Printf("Stop tunnel for localPort[%d]!\n", self.localPort)
+		fmt.Printf("Stop tunnel for [%s:%d]!\n", self.proxyHost, self.proxyPort)
 	}
 	self.cmdChan <- stopTunnelCmd
 	for _, tunnelCon := range self.tunnelConns {
@@ -220,7 +225,7 @@ func (self *Tunnel) GetUrl(assignedDomain string) (string, error) {
 	if len(assignedDomain) == 0 {
 		assignedDomain = "?new"
 	}
-	assignedUrlInfo, err := GetAssignedUrl(assignedDomain)
+	assignedUrlInfo, err := GetAssignedUrl(self.tunnelServer, assignedDomain)
 	if err != nil {
 		return "", err
 	}
@@ -229,7 +234,8 @@ func (self *Tunnel) GetUrl(assignedDomain string) (string, error) {
 	return assignedUrlInfo.Url, nil
 }
 
-func (self *Tunnel) CreateTunnel(localPort int) error {
-	self.localPort = localPort
-	return self.startTunnel()
+func (self *Tunnel) CreateTunnel(proxyHost string, proxyPort int) error {
+	self.proxyHost = proxyHost
+	self.proxyPort = proxyPort
+	return self.checkArgs()
 }
